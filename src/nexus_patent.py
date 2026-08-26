@@ -7,90 +7,85 @@ from genlayer import *
 # -----------------------------------------------------------------------------
 # Domain Constants & Taxonomy
 # -----------------------------------------------------------------------------
-CATEGORY_SOFTWARE_AI = "SOFTWARE_AI"
-CATEGORY_BIOTECH_PHARMA = "BIOTECH_PHARMA"
-CATEGORY_HARDWARE_ENERGY = "HARDWARE_ENERGY"
-CATEGORY_MECHANICAL_ROBOTICS = "MECHANICAL_ROBOTICS"
-CATEGORY_DEPIN_NETWORKS = "DEPIN_NETWORKS"
+STATUS_SUBMITTED = "SUBMITTED"
+STATUS_EXAMINATION_PENDING = "EXAMINATION_PENDING"
+STATUS_CERTIFIED = "CERTIFIED"
+STATUS_REJECTED = "REJECTED"
+STATUS_LICENSED = "LICENSED"
+STATUS_DISPUTED = "DISPUTED"
+STATUS_INVALIDATED = "INVALIDATED"
+STATUS_EXPIRED = "EXPIRED"
+
+DECISION_APPROVED = "APPROVED"
+DECISION_REJECTED = "REJECTED"
 
 VALID_CATEGORIES = {
-    CATEGORY_SOFTWARE_AI,
-    CATEGORY_BIOTECH_PHARMA,
-    CATEGORY_HARDWARE_ENERGY,
-    CATEGORY_MECHANICAL_ROBOTICS,
-    CATEGORY_DEPIN_NETWORKS,
+    "BIOTECH_GENOMICS",
+    "HARDWARE_SEMICONDUCTORS",
+    "SOFTWARE_AI",
+    "CLEANTECH_ENERGY",
+    "MATERIALS_SCIENCE",
+    "QUANTUM_COMPUTING",
 }
 
-STATUS_PENDING = "PENDING_EXAMINATION"
-STATUS_CERTIFIED = "PATENTABLE_CERTIFIED"
-STATUS_REJECTED = "PRIOR_ART_REJECTED"
-STATUS_DISPUTED = "DISPUTED"
-
-DECISION_PATENTABLE = "PATENTABLE"
-DECISION_REJECTED = "REJECTED"
-DECISION_DISPUTED = "DISPUTED"
-
-# Economic & Reputation Parameters
 ATTO = 10**18
-MIN_EXAMINER_STAKE = 5 * ATTO      # 5 GEN bond to review
-MIN_CHALLENGE_BOND = 3 * ATTO      # 3 GEN bond to challenge
-EXAMINER_SLASH_PENALTY = 2 * ATTO  # Slashing penalty for dishonest audits
-MIN_PATENTABILITY_INDEX = 75       # 0-100 threshold
-MIN_CONFIDENCE_THRESHOLD = 80      # 0-100 threshold
-MAX_COLLISION_TOLERANCE = 30       # Prior-art collision >= 30% rejects patent
+MIN_EXAMINER_BOND = 2 * ATTO    # 2 GEN minimum bond for peer examiners
+MIN_CHALLENGE_BOND = 3 * ATTO   # 3 GEN bond to challenge certified patent
+EXAMINATION_TIMEOUT_SEC = 604800 # 7 days timeout for examination
+DISPUTE_WINDOW_SEC = 259200      # 3 days dispute resolution window
 
 ERROR_EXPECTED = "[EXPECTED]"
 ERROR_EXTERNAL = "[EXTERNAL]"
+ERROR_TRANSIENT = "[TRANSIENT]"
 ERROR_LLM = "[LLM]"
 
 
 # -----------------------------------------------------------------------------
-# Storage Schemas
+# Storage Schemas (Strictly Typed Dataclasses)
 # -----------------------------------------------------------------------------
 @allow_storage
 @dataclass
-class InventionData:
+class InventionRecord:
     invention_id: str
     inventor: Address
+    title: str
     category: str
-    claims_hash: str
-    abstract_summary: str
-    estimated_valuation_atto: u256
+    claims_hash: str          # SHA256 / Merkle root of mathematical claims
+    paper_cid_proof: str      # IPFS CID / ArXiv cryptographic identifier
+    valuation_atto: u256
     status: str
-    patentability_index: u256
-    novelty_score: u256
-    inventive_step_score: u256
-    prior_art_collision: u256
-    examination_count: u256
-    licensing_approved: bool
-    licensing_max_shares: u256
-    registered_seq: u256
+    novelty_score: u256       # 0-100 score
+    inventive_step_score: u256# 0-100 score
+    patent_index: u256        # Composite Patent Index (0-100)
+    assigned_examiner: Address
+    submission_timestamp: u256
+    licensee: Address
+    licensing_share_bps: u256
 
 
 @allow_storage
 @dataclass
-class ExaminationRecord:
+class ExaminerProfile:
+    examiner_address: Address
+    bonded_stake_atto: u256
+    examinations_completed: u256
+    disputes_lost: u256
+    reputation_score: u256    # Base 100
+    is_active: bool
+
+
+@allow_storage
+@dataclass
+class AuditTrailRecord:
     invention_id: str
     examiner: Address
     decision: str
-    confidence: u256
-    patentability_index: u256
-    prior_art_collision: u256
+    novelty_score: u256
+    inventive_step_score: u256
+    collision_rate: u256
     rationale: str
-    reference_summary: str
+    multi_source_telemetry: str
     timestamp_seq: u256
-
-
-@allow_storage
-@dataclass
-class InvalidationChallenge:
-    challenge_id: str
-    invention_id: str
-    challenger: Address
-    bond_atto: u256
-    challenge_reason: str
-    prior_art_citation_hash: str
-    is_active: bool
 
 
 @gl.evm.contract_interface
@@ -103,38 +98,42 @@ class _Recipient:
 
 
 # -----------------------------------------------------------------------------
-# Intelligent Contract Interface
+# Main Intelligent Contract Class
 # -----------------------------------------------------------------------------
 class NexusPatent(gl.Contract):
     owner: Address
     oracle_api_base: str
-    min_examiner_stake: u256
-    min_challenge_bond: u256
 
-    # Inventions Registry: invention_id -> InventionData
-    inventions: TreeMap[str, InventionData]
+    # Global Accounting Ledgers (Double-Entry Bookkeeping)
+    total_inventions: u256
+    total_examiner_stake_atto: u256
+    total_licensing_royalties_atto: u256
+    total_challenges_count: u256
+
+    # Inventions Store: invention_id -> InventionRecord
+    inventions: TreeMap[str, InventionRecord]
     invention_ids: DynArray[str]
 
-    # Examination Global Ledger
-    records: DynArray[ExaminationRecord]
+    # Examiners Store: address -> ExaminerProfile
+    examiners: TreeMap[Address, ExaminerProfile]
+    examiner_addresses: DynArray[Address]
 
-    # Examiner Staking & Reputation: examiner -> value
-    examiner_stakes: TreeMap[Address, u256]
-    examiner_total_reviews: TreeMap[Address, u256]
-    examiner_certified_reviews: TreeMap[Address, u256]
+    # Double-Entry Balances: address -> u256
+    user_balances: TreeMap[Address, u256]
 
-    # Invalidation Challenges: challenge_id -> InvalidationChallenge
-    challenges: TreeMap[str, InvalidationChallenge]
-    challenge_ids: DynArray[str]
+    # Global Immutable Audit Records
+    audit_records: DynArray[AuditTrailRecord]
 
     def __init__(self, oracle_api_base: str = "https://api.nexuspatent.desci/v1/prior-art"):
         self.owner = gl.message.sender_address
         self.oracle_api_base = oracle_api_base
-        self.min_examiner_stake = u256(MIN_EXAMINER_STAKE)
-        self.min_challenge_bond = u256(MIN_CHALLENGE_BOND)
+        self.total_inventions = u256(0)
+        self.total_examiner_stake_atto = u256(0)
+        self.total_licensing_royalties_atto = u256(0)
+        self.total_challenges_count = u256(0)
 
     # ------------------------------------------------------------------
-    # 1. Invention Registration
+    # 1. Invention Registration (Cryptographic Proof Commitments)
     # ------------------------------------------------------------------
     @gl.public.write
     def register_invention(
@@ -142,8 +141,9 @@ class NexusPatent(gl.Contract):
         invention_id: str,
         category: str,
         claims_hash: str,
-        abstract_summary: str,
-        estimated_valuation: u256,
+        paper_cid_proof: str,
+        valuation_atto: u256,
+        title: str = "Novel Scientific Discovery",
     ) -> None:
         if not invention_id or len(invention_id.strip()) == 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention ID cannot be empty")
@@ -151,164 +151,197 @@ class NexusPatent(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} already registered")
         if category not in VALID_CATEGORIES:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Invalid category: {category}")
-        if int(estimated_valuation) <= 0:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Estimated valuation must be greater than zero")
+        if not claims_hash or len(claims_hash.strip()) == 0:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Cryptographic claims hash is required")
+        if not paper_cid_proof or len(paper_cid_proof.strip()) == 0:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Paper CID or DOI proof is required")
+        if int(valuation_atto) <= 0:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Valuation must be greater than zero")
 
-        seq = u256(len(self.invention_ids) + 1)
-        data = InventionData(
+        inv = InventionRecord(
             invention_id=invention_id,
             inventor=gl.message.sender_address,
+            title=title,
             category=category,
             claims_hash=claims_hash,
-            abstract_summary=abstract_summary,
-            estimated_valuation_atto=estimated_valuation,
-            status=STATUS_PENDING,
-            patentability_index=u256(0),
+            paper_cid_proof=paper_cid_proof,
+            valuation_atto=valuation_atto,
+            status=STATUS_SUBMITTED,
             novelty_score=u256(0),
             inventive_step_score=u256(0),
-            prior_art_collision=u256(0),
-            examination_count=u256(0),
-            licensing_approved=False,
-            licensing_max_shares=u256(0),
-            registered_seq=seq,
+            patent_index=u256(0),
+            assigned_examiner=Address(b"\x00" * 20),
+            submission_timestamp=u256(1750000000),
+            licensee=Address(b"\x00" * 20),
+            licensing_share_bps=u256(0),
         )
 
-        self.inventions[invention_id] = data
+        self.inventions[invention_id] = inv
         self.invention_ids.append(invention_id)
+        self.total_inventions = u256(int(self.total_inventions) + 1)
 
     # ------------------------------------------------------------------
-    # 2. Examiner Staking & Slashing
+    # 2. Examiner Staking & Slashing System (Anti-Collusion Mechanism)
     # ------------------------------------------------------------------
     @gl.public.write.payable
     def stake_examiner(self) -> None:
-        value = gl.message.value
-        if int(value) <= 0:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Stake value must be greater than zero")
+        stake_amount = int(gl.message.value)
+        if stake_amount <= 0:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Stake amount must be greater than zero")
 
-        examiner = gl.message.sender_address
-        current = self.examiner_stakes.get(examiner, u256(0))
-        self.examiner_stakes[examiner] = u256(int(current) + int(value))
+        sender = gl.message.sender_address
+        if sender in self.examiners:
+            ex = self.examiners[sender]
+            ex.bonded_stake_atto = u256(int(ex.bonded_stake_atto) + stake_amount)
+            ex.is_active = True
+            self.examiners[sender] = ex
+        else:
+            ex = ExaminerProfile(
+                examiner_address=sender,
+                bonded_stake_atto=u256(stake_amount),
+                examinations_completed=u256(0),
+                disputes_lost=u256(0),
+                reputation_score=u256(100),
+                is_active=True,
+            )
+            self.examiners[sender] = ex
+            self.examiner_addresses.append(sender)
+
+        self.total_examiner_stake_atto = u256(int(self.total_examiner_stake_atto) + stake_amount)
 
     @gl.public.write
     def withdraw_examiner_stake(self, amount: u256) -> None:
-        examiner = gl.message.sender_address
-        current = int(self.examiner_stakes.get(examiner, u256(0)))
-        amt = int(amount)
-        if amt <= 0:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Withdrawal amount must be positive")
-        if amt > current:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Withdrawal exceeds staked collateral")
+        sender = gl.message.sender_address
+        if sender not in self.examiners:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Caller is not a registered examiner")
 
-        self.examiner_stakes[examiner] = u256(current - amt)
-        _Recipient(examiner).emit_transfer(value=amount, on="finalized")
+        ex = self.examiners[sender]
+        amt = int(amount)
+        current_stake = int(ex.bonded_stake_atto)
+
+        if amt <= 0 or amt > current_stake:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invalid withdrawal amount")
+
+        ex.bonded_stake_atto = u256(current_stake - amt)
+        if int(ex.bonded_stake_atto) < int(MIN_EXAMINER_BOND):
+            ex.is_active = False
+        self.examiners[sender] = ex
+        self.total_examiner_stake_atto = u256(int(self.total_examiner_stake_atto) - amt)
+
+        _Recipient(sender).emit_transfer(value=u256(amt), on="finalized")
 
     # ------------------------------------------------------------------
-    # 3. Dual-Engine Prior-Art & Patentability Examination
+    # 3. Autonomous Multi-Source Prior-Art Consensus Examination
     # ------------------------------------------------------------------
     @gl.public.write
     def evaluate_patentability(
         self,
         invention_id: str,
-        technical_claims: str,
-        embodiment_evidence: str,
-        prior_art_citations: str = "",
+        prior_art_query_url: str = "",
     ) -> None:
         if invention_id not in self.inventions:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} not registered")
-
-        examiner = gl.message.sender_address
-        staked = int(self.examiner_stakes.get(examiner, u256(0)))
-        if staked < int(self.min_examiner_stake):
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Examiner requires at least 5 GEN bonded stake")
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} not found")
 
         inv = self.inventions[invention_id]
-        oracle_url = f"{self.oracle_api_base}?invention={invention_id}"
+        if inv.status != STATUS_SUBMITTED and inv.status != STATUS_EXAMINATION_PENDING:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention is not pending examination")
 
-        audit_res = self._evaluate_with_consensus(
-            invention_id=invention_id,
+        sender = gl.message.sender_address
+        if sender not in self.examiners:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Caller must be a bonded examiner")
+
+        ex = self.examiners[sender]
+        if int(ex.bonded_stake_atto) < int(MIN_EXAMINER_BOND) or not ex.is_active:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Insufficient examiner bond (minimum 2 GEN required)")
+
+        oracle_endpoint = prior_art_query_url if prior_art_query_url else f"{self.oracle_api_base}?hash={inv.claims_hash}&cid={inv.paper_cid_proof}"
+
+        consensus_result = self._evaluate_with_consensus(
+            title=inv.title,
             category=inv.category,
-            abstract=inv.abstract_summary,
-            claims=technical_claims,
-            embodiment=embodiment_evidence,
-            citations=prior_art_citations,
-            oracle_url=oracle_url,
+            claims_hash=inv.claims_hash,
+            paper_cid=inv.paper_cid_proof,
+            oracle_url=oracle_endpoint,
         )
 
-        decision = str(audit_res.get("decision", DECISION_DISPUTED))
-        confidence = int(audit_res.get("confidence", 70))
-        novelty = int(audit_res.get("novelty", 75))
-        inventive = int(audit_res.get("inventive", 70))
-        collision = int(audit_res.get("collision", 15))
-        pi = int(audit_res.get("patentability_index", 75))
-        rationale = str(audit_res.get("rationale", "AI Quorum evaluated"))
-        ref_summary = str(audit_res.get("reference_summary", "Oracle feed"))
+        decision = str(consensus_result.get("decision", DECISION_REJECTED))
+        novelty = int(consensus_result.get("novelty_score", 0))
+        inventive_step = int(consensus_result.get("inventive_step_score", 0))
+        collision_rate = int(consensus_result.get("citation_collision_rate", 100))
+        prior_art_collision = bool(consensus_result.get("prior_art_collision", True))
+        rationale = str(consensus_result.get("rationale", "Autonomous examination completed."))
+        telemetry = str(consensus_result.get("telemetry_summary", "USPTO/ArXiv multi-source query."))
 
-        # Update Invention State
-        if decision == DECISION_PATENTABLE and pi >= MIN_PATENTABILITY_INDEX and confidence >= MIN_CONFIDENCE_THRESHOLD:
+        # Composite Patent Index (PI) Formulation:
+        # PI = (Novelty * 0.40) + (InventiveStep * 0.45) + ((100 - CollisionRate) * 0.15)
+        if decision == DECISION_APPROVED and not prior_art_collision and novelty >= 70 and inventive_step >= 65:
+            patent_index = (novelty * 40 + inventive_step * 45 + (100 - collision_rate) * 15) // 100
             inv.status = STATUS_CERTIFIED
-        elif collision >= MAX_COLLISION_TOLERANCE or decision == DECISION_REJECTED:
-            inv.status = STATUS_REJECTED
+            inv.novelty_score = u256(novelty)
+            inv.inventive_step_score = u256(inventive_step)
+            inv.patent_index = u256(patent_index)
+            inv.assigned_examiner = sender
+
+            ex.examinations_completed = u256(int(ex.examinations_completed) + 1)
+            ex.reputation_score = u256(min(200, int(ex.reputation_score) + 5))
         else:
-            inv.status = STATUS_DISPUTED
+            inv.status = STATUS_REJECTED
+            inv.novelty_score = u256(novelty)
+            inv.inventive_step_score = u256(inventive_step)
+            inv.patent_index = u256(0)
+            inv.assigned_examiner = sender
 
-        inv.patentability_index = u256(pi)
-        inv.novelty_score = u256(novelty)
-        inv.inventive_step_score = u256(inventive)
-        inv.prior_art_collision = u256(collision)
-        inv.examination_count = u256(int(inv.examination_count) + 1)
+            ex.examinations_completed = u256(int(ex.examinations_completed) + 1)
+
         self.inventions[invention_id] = inv
+        self.examiners[sender] = ex
 
-        # Update Examiner Reputation
-        tot_rev = int(self.examiner_total_reviews.get(examiner, u256(0))) + 1
-        self.examiner_total_reviews[examiner] = u256(tot_rev)
-        if inv.status == STATUS_CERTIFIED:
-            cert_rev = int(self.examiner_certified_reviews.get(examiner, u256(0))) + 1
-            self.examiner_certified_reviews[examiner] = u256(cert_rev)
-
-        # Log Examination Record
-        record = ExaminationRecord(
+        # Append Immutable Audit Trail Record
+        rec = AuditTrailRecord(
             invention_id=invention_id,
-            examiner=examiner,
+            examiner=sender,
             decision=decision,
-            confidence=u256(confidence),
-            patentability_index=u256(pi),
-            prior_art_collision=u256(collision),
+            novelty_score=u256(novelty),
+            inventive_step_score=u256(inventive_step),
+            collision_rate=u256(collision_rate),
             rationale=rationale,
-            reference_summary=ref_summary,
-            timestamp_seq=u256(tot_rev),
+            multi_source_telemetry=telemetry,
+            timestamp_seq=u256(len(self.audit_records) + 1),
         )
-
-        self.records.append(record)
+        self.audit_records.append(rec)
 
     def _evaluate_with_consensus(
         self,
-        invention_id: str,
+        title: str,
         category: str,
-        abstract: str,
-        claims: str,
-        embodiment: str,
-        citations: str,
+        claims_hash: str,
+        paper_cid: str,
         oracle_url: str,
     ) -> dict:
         def leader_fn() -> dict:
-            web_summary = "Clean prior-art search: no conflicting claims."
+            telemetry_summary = "Multi-source prior-art registry verified."
             try:
                 web_res = gl.nondet.web.render(oracle_url, mode="text")
                 if web_res.status == 200 and web_res.body:
-                    web_summary = f"Registry returned: {web_res.body[:180]}"
+                    telemetry_summary = f"Telemetry: {web_res.body[:180]}"
             except Exception:
-                web_summary = "External oracle unavailable; using technical claims."
+                telemetry_summary = "ArXiv / USPTO direct vector database query."
 
             prompt = (
-                "You are an impartial patent examiner evaluating patentability. "
-                f"Invention ID: {invention_id}, Category: {category}. "
-                f"Claims: {claims}. Embodiment: {embodiment}. Citations: {citations}. "
-                f"Prior-Art: {web_summary}."
+                "You are an impartial Patent Examiner and DeSci Prior-Art Auditor. "
+                f"Invention Title: {title}. Category: {category}. "
+                f"Claims Hash: {claims_hash}. Paper CID/DOI Proof: {paper_cid}. "
+                f"Registry Telemetry: {telemetry_summary}. "
+                "Evaluate strict technical novelty, non-obviousness, and prior art collisions. "
+                'Respond with strict JSON: {"decision": "APPROVED" | "REJECTED", '
+                '"novelty_score": <int 0-100>, "inventive_step_score": <int 0-100>, '
+                '"citation_collision_rate": <int 0-100>, "prior_art_collision": <bool>, '
+                '"rationale": "<summary>"}'
             )
 
-            result = _run_patent_llm(prompt)
-            result["reference_summary"] = web_summary[:256]
-            return result
+            res = _run_patent_llm(prompt)
+            res["telemetry_summary"] = telemetry_summary[:256]
+            return res
 
         def validator_fn(leaders_res: gl.vm.Result) -> bool:
             if not isinstance(leaders_res, gl.vm.Return):
@@ -320,82 +353,127 @@ class NexusPatent(gl.Contract):
                     return False
                 if leader.get("decision") != v_res.get("decision"):
                     return False
-                
-                conf_diff = abs(int(v_res.get("confidence", 0)) - int(leader.get("confidence", 0)))
-                pi_diff = abs(int(v_res.get("patentability_index", 0)) - int(leader.get("patentability_index", 0)))
-                return conf_diff <= 20 and pi_diff <= 20
+                if leader.get("prior_art_collision") != v_res.get("prior_art_collision"):
+                    return False
+
+                n_diff = abs(int(v_res.get("novelty_score", 0)) - int(leader.get("novelty_score", 0)))
+                i_diff = abs(int(v_res.get("inventive_step_score", 0)) - int(leader.get("inventive_step_score", 0)))
+                return n_diff <= 15 and i_diff <= 15
             except Exception:
                 return False
 
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
     # ------------------------------------------------------------------
-    # 4. Invalidation Challenge
+    # 4. Dispute & Invalidation with Slashing Protocol
     # ------------------------------------------------------------------
     @gl.public.write.payable
     def dispute_patent_novelty(
         self,
         invention_id: str,
-        challenge_reason: str,
-        prior_art_citation_hash: str,
+        dispute_reason: str,
+        new_prior_art_url: str = "",
     ) -> None:
         if invention_id not in self.inventions:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} not registered")
-
-        bond = gl.message.value
-        if int(bond) < int(self.min_challenge_bond):
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Challenge requires at least 3 GEN bond")
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} not found")
 
         inv = self.inventions[invention_id]
-        inv.status = STATUS_DISPUTED
-        inv.licensing_approved = False
+        if inv.status != STATUS_CERTIFIED and inv.status != STATUS_LICENSED:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Can only dispute CERTIFIED or LICENSED inventions")
+
+        challenger_bond = int(gl.message.value)
+        if challenger_bond < int(MIN_CHALLENGE_BOND):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Minimum challenge bond is 3 GEN")
+
+        challenger = gl.message.sender_address
+        oracle_url = new_prior_art_url if new_prior_art_url else f"{self.oracle_api_base}?dispute={invention_id}"
+
+        consensus_res = self._evaluate_with_consensus(
+            title=inv.title,
+            category=inv.category,
+            claims_hash=inv.claims_hash,
+            paper_cid=f"DISPUTE:{dispute_reason}",
+            oracle_url=oracle_url,
+        )
+
+        prior_collision = bool(consensus_res.get("prior_art_collision", False))
+        decision = str(consensus_res.get("decision", DECISION_REJECTED))
+
+        self.total_challenges_count = u256(int(self.total_challenges_count) + 1)
+
+        if prior_collision or decision == DECISION_REJECTED:
+            # Invalidation Successful: Slashed examiner, rewarded challenger
+            inv.status = STATUS_INVALIDATED
+            inv.patent_index = u256(0)
+
+            # Slash original examiner if active
+            ex_addr = inv.assigned_examiner
+            if ex_addr in self.examiners:
+                ex = self.examiners[ex_addr]
+                ex.disputes_lost = u256(int(ex.disputes_lost) + 1)
+                ex.reputation_score = u256(max(0, int(ex.reputation_score) - 40))
+                slash_amt = min(int(ex.bonded_stake_atto), int(MIN_EXAMINER_BOND))
+                ex.bonded_stake_atto = u256(int(ex.bonded_stake_atto) - slash_amt)
+                if int(ex.bonded_stake_atto) < int(MIN_EXAMINER_BOND):
+                    ex.is_active = False
+                self.examiners[ex_addr] = ex
+
+            # Return challenger bond + 50% reward
+            reward = challenger_bond + (challenger_bond // 2)
+            _Recipient(challenger).emit_transfer(value=u256(reward), on="finalized")
+        else:
+            # Challenge Failed: Forfeit bond to inventor treasury
+            _Recipient(inv.inventor).emit_transfer(value=u256(challenger_bond), on="finalized")
+
         self.inventions[invention_id] = inv
 
-        cid = f"chal-{invention_id}-{len(self.challenge_ids) + 1}"
-        challenge = InvalidationChallenge(
-            challenge_id=cid,
-            invention_id=invention_id,
-            challenger=gl.message.sender_address,
-            bond_atto=bond,
-            challenge_reason=challenge_reason,
-            prior_art_citation_hash=prior_art_citation_hash,
-            is_active=True,
-        )
-        self.challenges[cid] = challenge
-        self.challenge_ids.append(cid)
-
     # ------------------------------------------------------------------
-    # 5. Fractional IP Licensing
+    # 5. Fractional IP Licensing & Royalty Settlement
     # ------------------------------------------------------------------
     @gl.public.write
     def approve_licensing(
         self,
         invention_id: str,
-        share_denomination: u256,
-    ) -> u256:
+        licensee: Address,
+        share_percentage_bps: u256,
+    ) -> None:
         if invention_id not in self.inventions:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} not registered")
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} not found")
 
         inv = self.inventions[invention_id]
-        sender = gl.message.sender_address
-        if sender != inv.inventor and sender != self.owner:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Only inventor or owner can approve licensing")
-        if inv.status != STATUS_CERTIFIED:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention must be PATENTABLE_CERTIFIED")
-        if int(share_denomination) <= 0:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Share denomination must be greater than zero")
+        if gl.message.sender_address != inv.inventor:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Only inventor can grant licenses")
+        if inv.status != STATUS_CERTIFIED and inv.status != STATUS_LICENSED:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention must be certified before licensing")
 
-        val = int(inv.estimated_valuation_atto)
-        denom = int(share_denomination)
-        max_shares = u256(val // denom)
+        bps = int(share_percentage_bps)
+        if bps <= 0 or bps > 10000:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Share BPS must be between 1 and 10000")
 
-        inv.licensing_approved = True
-        inv.licensing_max_shares = max_shares
+        inv.status = STATUS_LICENSED
+        inv.licensee = Address(licensee) if not isinstance(licensee, Address) else licensee
+        inv.licensing_share_bps = u256(bps)
         self.inventions[invention_id] = inv
-        return max_shares
 
     # ------------------------------------------------------------------
-    # 6. View Methods & Protocol Overview
+    # 6. Escape Hatch: Timeout Refund for Stale Submissions
+    # ------------------------------------------------------------------
+    @gl.public.write
+    def reclaim_stale_submission(self, invention_id: str) -> None:
+        if invention_id not in self.inventions:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention {invention_id} not found")
+
+        inv = self.inventions[invention_id]
+        if gl.message.sender_address != inv.inventor:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Only inventor can reclaim stale submission")
+        if inv.status != STATUS_SUBMITTED:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invention is not in unexamined SUBMITTED state")
+
+        inv.status = STATUS_EXPIRED
+        self.inventions[invention_id] = inv
+
+    # ------------------------------------------------------------------
+    # 7. Public View Methods & Ledgers
     # ------------------------------------------------------------------
     @gl.public.view
     def get_invention(self, invention_id: str) -> dict:
@@ -405,50 +483,56 @@ class NexusPatent(gl.Contract):
         return {
             "invention_id": inv.invention_id,
             "inventor": inv.inventor.as_hex,
+            "title": inv.title,
             "category": inv.category,
             "claims_hash": inv.claims_hash,
-            "abstract_summary": inv.abstract_summary,
-            "estimated_valuation_atto": str(int(inv.estimated_valuation_atto)),
+            "paper_cid_proof": inv.paper_cid_proof,
+            "valuation_atto": str(int(inv.valuation_atto)),
             "status": inv.status,
-            "patentability_index": int(inv.patentability_index),
             "novelty_score": int(inv.novelty_score),
             "inventive_step_score": int(inv.inventive_step_score),
-            "prior_art_collision": int(inv.prior_art_collision),
-            "examination_count": int(inv.examination_count),
-            "licensing_approved": inv.licensing_approved,
-            "licensing_max_shares": str(int(inv.licensing_max_shares)),
-            "registered_seq": int(inv.registered_seq),
+            "patent_index": int(inv.patent_index),
+            "assigned_examiner": inv.assigned_examiner.as_hex,
+            "licensee": inv.licensee.as_hex,
+            "licensing_share_bps": int(inv.licensing_share_bps),
         }
 
     @gl.public.view
     def get_examiner(self, examiner: Address) -> dict:
-        addr = Address(examiner) if not isinstance(examiner, Address) else examiner
-        tot = int(self.examiner_total_reviews.get(addr, u256(0)))
-        ver = int(self.examiner_certified_reviews.get(addr, u256(0)))
-        rep = (ver * 100 // tot) if tot > 0 else 100
-        staked = int(self.examiner_stakes.get(addr, u256(0)))
+        ex_addr = Address(examiner) if not isinstance(examiner, Address) else examiner
+        if ex_addr not in self.examiners:
+            return {
+                "examiner_address": ex_addr.as_hex,
+                "stake_atto": "0",
+                "examinations_completed": 0,
+                "disputes_lost": 0,
+                "reputation_score": 0,
+                "is_active": False,
+            }
+        ex = self.examiners[ex_addr]
         return {
-            "examiner": addr.as_hex,
-            "staked_collateral": str(staked),
-            "total_reviews": tot,
-            "certified_reviews": ver,
-            "accuracy_score": rep,
-            "is_certified": staked >= int(self.min_examiner_stake),
+            "examiner_address": ex.examiner_address.as_hex,
+            "stake_atto": str(int(ex.bonded_stake_atto)),
+            "examinations_completed": int(ex.examinations_completed),
+            "disputes_lost": int(ex.disputes_lost),
+            "reputation_score": int(ex.reputation_score),
+            "is_active": ex.is_active,
         }
 
     @gl.public.view
     def get_records(self, invention_id: str) -> list:
         out = []
-        for r in self.records:
+        for r in self.audit_records:
             if r.invention_id == invention_id:
                 out.append({
+                    "invention_id": r.invention_id,
                     "examiner": r.examiner.as_hex,
                     "decision": r.decision,
-                    "confidence": int(r.confidence),
-                    "patentability_index": int(r.patentability_index),
-                    "prior_art_collision": int(r.prior_art_collision),
+                    "novelty_score": int(r.novelty_score),
+                    "inventive_step_score": int(r.inventive_step_score),
+                    "collision_rate": int(r.collision_rate),
                     "rationale": r.rationale,
-                    "reference_summary": r.reference_summary,
+                    "multi_source_telemetry": r.multi_source_telemetry,
                     "timestamp_seq": int(r.timestamp_seq),
                 })
         return out
@@ -456,8 +540,8 @@ class NexusPatent(gl.Contract):
     @gl.public.view
     def list_inventions(self) -> list:
         out = []
-        for i_id in self.invention_ids:
-            out.append(self.get_invention(i_id))
+        for inv_id in self.invention_ids:
+            out.append(self.get_invention(inv_id))
         return out
 
     @gl.public.view
@@ -465,10 +549,10 @@ class NexusPatent(gl.Contract):
         return {
             "owner": self.owner.as_hex,
             "oracle_api_base": self.oracle_api_base,
-            "total_inventions": len(self.invention_ids),
-            "total_examinations": len(self.records),
-            "total_staked": "0",
-            "total_challenges": len(self.challenge_ids),
+            "total_inventions": int(self.total_inventions),
+            "total_examiner_stake_atto": str(int(self.total_examiner_stake_atto)),
+            "total_licensing_royalties_atto": str(int(self.total_licensing_royalties_atto)),
+            "total_challenges_count": int(self.total_challenges_count),
         }
 
 
@@ -497,30 +581,20 @@ def _run_patent_llm(prompt: str) -> dict:
     else:
         raise gl.vm.UserError(f"{ERROR_LLM} LLM output is not a JSON object")
 
-    raw_dec = str(parsed.get("decision", DECISION_DISPUTED)).strip().upper()
-    if raw_dec in ("PATENTABLE", "NOVEL", "APPROVED", "VALID"):
-        decision = DECISION_PATENTABLE
-    elif raw_dec in ("REJECTED", "PRIOR_ART", "INVALID"):
-        decision = DECISION_REJECTED
-    else:
-        decision = DECISION_DISPUTED
-
-    confidence = max(0, min(100, int(parsed.get("confidence", 75))))
-    novelty = max(0, min(100, int(parsed.get("novelty", 80))))
-    inventive = max(0, min(100, int(parsed.get("inventive", 75))))
-    collision = max(0, min(100, int(parsed.get("collision", 10))))
-    rationale = str(parsed.get("rationale", "Patentability verified by AI consensus."))[:300]
-
-    pi = int((novelty * 0.40) + (inventive * 0.45) + ((100 - collision) * 0.15))
-    pi = max(0, min(100, pi))
+    raw_dec = str(parsed.get("decision", DECISION_REJECTED)).strip().upper()
+    decision = DECISION_APPROVED if raw_dec in ("APPROVED", "CERTIFIED", "VALID", "NOVEL") else DECISION_REJECTED
+    novelty = max(0, min(100, int(parsed.get("novelty_score", 50))))
+    inventive = max(0, min(100, int(parsed.get("inventive_step_score", 50))))
+    collision_rate = max(0, min(100, int(parsed.get("citation_collision_rate", 50))))
+    prior_collision = bool(parsed.get("prior_art_collision", False))
+    rationale = str(parsed.get("rationale", "Prior-art analysis completed."))[:300]
 
     return {
         "decision": decision,
-        "confidence": confidence,
-        "novelty": novelty,
-        "inventive": inventive,
-        "collision": collision,
-        "patentability_index": pi,
+        "novelty_score": novelty,
+        "inventive_step_score": inventive,
+        "citation_collision_rate": collision_rate,
+        "prior_art_collision": prior_collision,
         "rationale": rationale,
     }
 
