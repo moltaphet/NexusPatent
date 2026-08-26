@@ -1,0 +1,22 @@
+[project]
+name = "nexus-patent"
+version = "1.0.0"
+description = "DeSci AI Prior-Art Consensus & Autonomous Patent Registry on GenLayer"
+authors = [
+    { name = "Elias Vance", email = "elias.vance.dev@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "genlayer-py>=0.16.3",
+    "genlayer-test>=0.29.2",
+    "pytest>=9.1.1"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+python_files = ["test_*.py"]
+addopts = "-p no:hydra_pytest"
+markers = [
+    "slow: integration tests running against network"
+]

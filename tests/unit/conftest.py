@@ -2,7 +2,7 @@
 
 import json
 
-CONTRACT_PATH = "contracts/nexus_patent.py"
+CONTRACT_PATH = "src/nexus_patent.py"
 PATENT_PROMPT_PATTERN = r".*impartial patent examiner.*"
 
 

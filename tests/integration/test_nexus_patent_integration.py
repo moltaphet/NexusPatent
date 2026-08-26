@@ -9,24 +9,23 @@ def test_nexus_patent_integration_flow():
     factory = get_contract_factory("NexusPatent")
     contract = factory.deploy(args=[])
 
-    # 1. Submit Patent Transaction
-    tx_submit = contract.submit_patent(
+    # 1. Register Invention Transaction
+    tx_reg = contract.register_invention(
         args=[
-            "patent-int-01",
-            "Photonic Neuromorphic Co-Processor",
-            "Hardware & AI Accelerators",
+            "pat-int-01",
+            "SOFTWARE_AI",
+            "sha256:optical-matrix-multiplier",
             "Silicon photonics waveguide circuit with optical matrix-vector multiplier.",
-            "https://arxiv.org/abs/2401.00001",
+            100000 * 10**18,
         ]
     ).transact()
-    assert tx_execution_succeeded(tx_submit)
+    assert tx_execution_succeeded(tx_reg)
 
     # 2. Read State via .call()
-    patent = contract.get_patent(args=["patent-int-01"]).call()
-    assert patent["patent_id"] == "patent-int-01"
-    assert patent["title"] == "Photonic Neuromorphic Co-Processor"
-    assert patent["status"] == "SUBMITTED"
+    inv = contract.get_invention(args=["pat-int-01"]).call()
+    assert inv["invention_id"] == "pat-int-01"
+    assert inv["status"] == "REGISTERED"
 
     # 3. Protocol Overview View
     overview = contract.get_protocol_overview().call()
-    assert overview["total_patents_submitted"] == 1
+    assert overview["total_inventions"] == 1
