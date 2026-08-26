@@ -2,7 +2,20 @@
 
 > **Autonomous Multi-LLM Quorum & Web2 Literature Consensus for On-Chain Intellectual Property Valuation and Invalidation.**
 
+[![GenLayer StudioNet](https://img.shields.io/badge/GenLayer-StudioNet_Deployed-blueviolet?style=for-the-badge&logo=ethereum)](https://studio.genlayer.com)
+[![Tests Passing](https://img.shields.io/badge/Unit_Tests-21%2F21_Passing-success?style=for-the-badge)](https://github.com/moltaphet/NexusPatent)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+
 NexusPatent is a GenLayer Intelligent Contract designed for Decentralized Science (DeSci) and Intellectual Property (IP) tokenization. It replaces centralized, slow, and opaque patent examination processes with deterministic, AI-powered novelty consensus cross-referenced with real-time academic and patent literature feeds (USPTO, EPO, Google Patents, arXiv).
+
+---
+
+## 🌐 Live Deployment Metadata
+
+- **Network:** GenLayer StudioNet (`https://studio.genlayer.com/api`)
+- **Contract Address:** `0x7980F4149B51b4603a426DE44c693aC3a0D4A0A7`
+- **Deployer Account:** `0xa49b905c5B236A740f5FB87b6DA6AFB73443ec47`
+- **Deployment Tx Hash:** `0x44eefa907cba89ae04dce474f1cdad11cdfe14ca98c1a75fd31f39f3312f73d9`
 
 ---
 
@@ -28,14 +41,14 @@ graph TD
     end
 
     subgraph Resolution & On-Chain State
-        METRICS -->|PI >= 75 & Conf >= 80%| CERT[PATENTABLE_CERTIFIED]
-        METRICS -->|Collision >= 30%| REJ[PRIOR_ART_REJECTED]
+        METRICS -->|PI >= 75 & Conf >= 80%| CERT[CERTIFIED Status]
+        METRICS -->|Collision >= 30%| REJ[REJECTED Status]
         CERT -->|5. On-Chain IP State| NP
     end
 
     subgraph Invalidation Challenge Flow
         CHAL[Challenger / DAO] -->|7. dispute_patent_novelty + 3 GEN Bond| NP
-        NP -->|Freeze Licensing| DISP[DISPUTED Status]
+        NP -->|Freeze Licensing & Slash| DISP[INVALIDATED Status]
     end
 ```
 
@@ -53,69 +66,69 @@ Where:
 - $C \in [0, 100]$: **Prior-Art Collision Score** (direct overlapping claims).
 
 ### Certification Rules
-1. **Certified Novel Patent**: $\text{PI} \ge 75 \quad \text{AND} \quad \text{Confidence} \ge 80\% \quad \text{AND} \quad C < 30\%$ $\longrightarrow$ `PATENTABLE_CERTIFIED`.
-2. **Prior-Art Rejection**: $C \ge 30\% \quad \text{OR} \quad \text{Decision} = \text{REJECTED}$ $\longrightarrow$ `PRIOR_ART_REJECTED`.
-3. **Disputed Review**: Inconclusive or ambiguous claims $\longrightarrow$ `DISPUTED`.
+1. **Certified Novel Patent**: $\text{PI} \ge 75 \quad \text{AND} \quad \text{Confidence} \ge 80\% \quad \text{AND} \quad C < 30\%$ $\longrightarrow$ `CERTIFIED`.
+2. **Prior-Art Rejection**: $C \ge 30\% \quad \text{OR} \quad \text{Decision} = \text{REJECTED}$ $\longrightarrow$ `REJECTED`.
+3. **Invalidated Review**: Corroborated prior disclosure $\longrightarrow$ `INVALIDATED`.
 
 ---
 
-## 🔒 Contract Storage & Methods
+## 🔒 Contract Specification
 
-### Contract Specification
 - **Language**: Python (`py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6`)
 - **Total Methods**: 11 (6 Write, 5 View)
+- **Source File**: `src/nexus_patent.py`
 
 ### Public Write Methods
-1. `register_invention(invention_id, category, claims_hash, abstract_summary, estimated_valuation)`: Register invention claims.
-2. `stake_examiner()` [Payable]: Bond minimum 5 GEN (`5 * 10^18 atto`) to become a certified examiner.
-3. `withdraw_examiner_stake(amount)`: Safely withdraw staked collateral with reentrancy safety.
-4. `evaluate_patentability(invention_id, technical_claims, embodiment_evidence, prior_art_citations)`: Trigger leader-validator multi-LLM prior-art audit.
-5. `dispute_patent_novelty(invention_id, challenge_reason, prior_art_citation_hash)` [Payable]: Post 3 GEN bond to freeze licensing and challenge novelty.
-6. `approve_licensing(invention_id, share_denomination)`: Authorize fractional IP tokenization for certified patents.
+1. `register_invention(invention_id, category, claims_hash, paper_cid, estimated_valuation_atto, title)`: Register invention with cryptographic claims hash & IPFS paper CID.
+2. `stake_examiner()` [Payable]: Bond minimum 5 GEN (`5 * 10^18 atto`) to become an authorized examiner.
+3. `withdraw_examiner_stake(amount_atto)`: Safely withdraw unbonded stake.
+4. `evaluate_patentability(invention_id, oracle_url)`: Trigger leader-validator multi-LLM prior-art consensus audit.
+5. `dispute_patent_novelty(invention_id, dispute_reason, new_prior_art_url)` [Payable]: Post 3 GEN challenge bond to dispute certified claims.
+6. `approve_licensing(invention_id, licensee, share_percentage_bps)`: Grant fractional commercial license shares.
+7. `reclaim_stale_submission(invention_id)`: Emergency timeout escape hatch for unexamined inventions.
 
 ### Public View Methods
-1. `get_invention(invention_id)`: Retrieve full patent state, scores, and licensing parameters.
-2. `get_examiner(examiner)`: Query examiner staked bond, review count, and accuracy reputation.
-3. `get_records(invention_id)`: Access complete audit history and consensus rationales.
+1. `get_invention(invention_id)`: Query patent state, scores, examiner, and licensing share.
+2. `get_examiner(examiner_address)`: Query examiner staked bond, review count, and reputation score.
+3. `get_records(invention_id)`: Query immutable consensus audit trail.
 4. `list_inventions()`: List all registered inventions.
 5. `get_protocol_overview()`: Protocol statistics and global counters.
 
 ---
 
-## 🧪 Testing & Verification
+## 🧪 1-Click End-to-End Demo & Unit Testing
 
-The contract is thoroughly tested using `pytest` and `genlayer-test` in direct VM mode with 21 unit tests covering all edge cases.
-
+### 1-Click Runnable Lifecycle Demo (Judges & Evaluation):
 ```bash
-# Lint and validate GenVM contract
-genvm-lint check contracts/nexus_patent.py
-
-# Run direct-mode test suite
-.venv/bin/pytest contracts/test/ -v
+python scripts/e2e_demo.py
 ```
 
-### Test Suite Summary:
+### Direct Unit Test Suite (21/21 Passing):
+```bash
+.venv/bin/pytest tests/unit/ -v
+```
+
 ```text
-✓ test_initial_state
-✓ test_register_ai_invention
-✓ test_register_biotech_invention
-✓ test_register_all_valid_categories
-✓ test_register_duplicate_rejection
-✓ test_register_empty_id_rejection
-✓ test_register_invalid_category_rejection
-✓ test_register_zero_valuation_rejection
-✓ test_examiner_stake_success
-✓ test_examiner_stake_zero_rejection
-✓ test_examiner_withdraw_stake
-✓ test_examiner_withdraw_excessive_rejection
-✓ test_evaluate_patentability_novel_certified
-✓ test_evaluate_patentability_prior_art_rejected
-✓ test_evaluate_patentability_unbonded_examiner_rejection
-✓ test_dispute_patent_novelty_success
-✓ test_dispute_patent_novelty_insufficient_bond_rejection
-✓ test_approve_licensing_success
-✓ test_approve_licensing_unverified_rejection
-✓ test_examiner_reputation_tracking
-✓ test_list_inventions_and_records
+tests/unit/test_nexus_patent.py::test_initial_state PASSED
+tests/unit/test_nexus_patent.py::test_register_ai_invention PASSED
+tests/unit/test_nexus_patent.py::test_register_biotech_invention PASSED
+tests/unit/test_nexus_patent.py::test_register_all_valid_categories PASSED
+tests/unit/test_nexus_patent.py::test_register_duplicate_rejection PASSED
+tests/unit/test_nexus_patent.py::test_register_empty_id_rejection PASSED
+tests/unit/test_nexus_patent.py::test_register_invalid_category_rejection PASSED
+tests/unit/test_nexus_patent.py::test_register_zero_valuation_rejection PASSED
+tests/unit/test_nexus_patent.py::test_examiner_stake_success PASSED
+tests/unit/test_nexus_patent.py::test_examiner_stake_zero_rejection PASSED
+tests/unit/test_nexus_patent.py::test_examiner_withdraw_stake PASSED
+tests/unit/test_nexus_patent.py::test_examiner_withdraw_excessive_rejection PASSED
+tests/unit/test_nexus_patent.py::test_evaluate_patentability_novel_certified PASSED
+tests/unit/test_nexus_patent.py::test_evaluate_patentability_prior_art_rejected PASSED
+tests/unit/test_nexus_patent.py::test_evaluate_patentability_unbonded_examiner_rejection PASSED
+tests/unit/test_nexus_patent.py::test_dispute_patent_novelty_success PASSED
+tests/unit/test_nexus_patent.py::test_dispute_patent_novelty_insufficient_bond_rejection PASSED
+tests/unit/test_nexus_patent.py::test_approve_licensing_success PASSED
+tests/unit/test_nexus_patent.py::test_approve_licensing_unverified_rejection PASSED
+tests/unit/test_nexus_patent.py::test_reclaim_stale_submission_success PASSED
+tests/unit/test_nexus_patent.py::test_list_inventions_and_records PASSED
 ============================== 21 passed in 0.40s ==============================
 ```
