@@ -3,7 +3,7 @@ name = "nexus-patent"
 version = "1.0.0"
 description = "DeSci AI Prior-Art Consensus & Autonomous Patent Registry on GenLayer"
 authors = [
-    { name = "Elias Vance", email = "elias.vance.dev@gmail.com" }
+    { name = "moltaphet", email = "moltaphet@users.noreply.github.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.12"
