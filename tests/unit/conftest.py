@@ -3,7 +3,7 @@
 import json
 
 CONTRACT_PATH = "src/nexus_patent.py"
-PATENT_PROMPT_PATTERN = r".*impartial Patent Examiner and DeSci Prior-Art Auditor.*"
+PATENT_PROMPT_PATTERN = r".*Patent Examiner and DeSci Prior-Art Auditor.*"
 
 
 def mock_ai_novelty(
@@ -41,5 +41,5 @@ def mock_ai_novelty(
 
 def mock_literature_oracle(direct_vm, payload=None, status: int = 200):
     """Mock the Web2 literature / patent search API response."""
-    body = json.dumps(payload if payload is not None else {"status": "ok", "total_citations": 4, "prior_art_collision": False})
+    body = json.dumps(payload if payload is not None else {"status": "ok", "total_citations": 4, "prior_art_collision": False, "evidence_abstract": "Novel topological waveguide architecture."})
     direct_vm.mock_web(r".*", {"status": status, "body": body})

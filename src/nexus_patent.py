@@ -34,6 +34,12 @@ MIN_CHALLENGE_BOND = 3 * ATTO   # 3 GEN bond to challenge certified patent
 EXAMINATION_TIMEOUT_SEC = 604800 # 7 days timeout for examination
 DISPUTE_WINDOW_SEC = 259200      # 3 days dispute resolution window
 
+# Certification thresholds
+MIN_NOVELTY_THRESHOLD = 70
+MIN_INVENTIVE_THRESHOLD = 65
+MAX_COLLISION_RATE_THRESHOLD = 30
+MIN_PATENT_INDEX_THRESHOLD = 75
+
 ERROR_EXPECTED = "[EXPECTED]"
 ERROR_EXTERNAL = "[EXTERNAL]"
 ERROR_TRANSIENT = "[TRANSIENT]"
@@ -248,20 +254,24 @@ class NexusPatent(gl.Contract):
 
         sender = gl.message.sender_address
         if sender not in self.examiners:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Caller must be a bonded examiner")
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Caller is not a registered examiner")
 
         ex = self.examiners[sender]
-        if int(ex.bonded_stake_atto) < int(MIN_EXAMINER_BOND) or not ex.is_active:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} Insufficient examiner bond (minimum 2 GEN required)")
+        if not ex.is_active or int(ex.bonded_stake_atto) < int(MIN_EXAMINER_BOND):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Examiner is inactive or insufficiently bonded")
 
-        oracle_endpoint = prior_art_query_url if prior_art_query_url else f"{self.oracle_api_base}?hash={inv.claims_hash}&cid={inv.paper_cid_proof}"
+        # Atomic status lock to prevent interleaved race conditions
+        inv.status = STATUS_EXAMINATION_PENDING
+        self.inventions[invention_id] = inv
+
+        oracle_url = prior_art_query_url if prior_art_query_url else f"{self.oracle_api_base}?claims={inv.claims_hash}"
 
         consensus_result = self._evaluate_with_consensus(
             title=inv.title,
             category=inv.category,
             claims_hash=inv.claims_hash,
             paper_cid=inv.paper_cid_proof,
-            oracle_url=oracle_endpoint,
+            oracle_url=oracle_url,
         )
 
         decision = str(consensus_result.get("decision", DECISION_REJECTED))
@@ -269,13 +279,21 @@ class NexusPatent(gl.Contract):
         inventive_step = int(consensus_result.get("inventive_step_score", 0))
         collision_rate = int(consensus_result.get("citation_collision_rate", 100))
         prior_art_collision = bool(consensus_result.get("prior_art_collision", True))
-        rationale = str(consensus_result.get("rationale", "Autonomous examination completed."))
-        telemetry = str(consensus_result.get("telemetry_summary", "USPTO/ArXiv multi-source query."))
+        rationale = str(consensus_result.get("rationale", "Autonomous grounded examination completed."))
+        telemetry = str(consensus_result.get("telemetry_summary", "Grounded telemetry."))
 
         # Composite Patent Index (PI) Formulation:
         # PI = (Novelty * 0.40) + (InventiveStep * 0.45) + ((100 - CollisionRate) * 0.15)
-        if decision == DECISION_APPROVED and not prior_art_collision and novelty >= 70 and inventive_step >= 65:
-            patent_index = (novelty * 40 + inventive_step * 45 + (100 - collision_rate) * 15) // 100
+        is_certified = (
+            decision == DECISION_APPROVED
+            and not prior_art_collision
+            and novelty >= MIN_NOVELTY_THRESHOLD
+            and inventive_step >= MIN_INVENTIVE_THRESHOLD
+            and collision_rate <= MAX_COLLISION_RATE_THRESHOLD
+        )
+
+        patent_index = (novelty * 40 + inventive_step * 45 + (100 - collision_rate) * 15) // 100
+        if is_certified and patent_index >= MIN_PATENT_INDEX_THRESHOLD:
             inv.status = STATUS_CERTIFIED
             inv.novelty_score = u256(novelty)
             inv.inventive_step_score = u256(inventive_step)
@@ -300,7 +318,7 @@ class NexusPatent(gl.Contract):
         rec = AuditTrailRecord(
             invention_id=invention_id,
             examiner=sender,
-            decision=decision,
+            decision=inv.status,
             novelty_score=u256(novelty),
             inventive_step_score=u256(inventive_step),
             collision_rate=u256(collision_rate),
@@ -319,24 +337,39 @@ class NexusPatent(gl.Contract):
         oracle_url: str,
     ) -> dict:
         def leader_fn() -> dict:
-            telemetry_summary = "Multi-source prior-art registry verified."
+            # Strictly grounded web fetch. If the fetch fails or returns invalid/empty data,
+            # we strictly raise an external error. Never fallback to hallucinated strings.
             try:
-                web_res = gl.nondet.web.render(oracle_url, mode="text")
-                if web_res.status == 200 and web_res.body:
-                    telemetry_summary = f"Telemetry: {web_res.body[:180]}"
-            except Exception:
-                telemetry_summary = "ArXiv / USPTO direct vector database query."
+                web_res = gl.nondet.web.get(oracle_url)
+                if hasattr(web_res, "status") and (web_res.status < 200 or web_res.status >= 300):
+                    raise gl.vm.UserError(f"{ERROR_EXTERNAL} Prior-art web oracle returned HTTP {web_res.status}")
+                if hasattr(web_res, "body"):
+                    body_str = web_res.body if isinstance(web_res.body, str) else web_res.body.decode("utf-8", errors="ignore")
+                else:
+                    body_str = str(web_res)
+            except gl.vm.UserError:
+                raise
+            except Exception as e:
+                raise gl.vm.UserError(f"{ERROR_EXTERNAL} Prior-art web oracle unreachable: {str(e)}")
+
+            cleaned_body = body_str.strip()
+            if len(cleaned_body) < 10:
+                raise gl.vm.UserError(f"{ERROR_EXTERNAL} Prior-art web oracle returned empty or insufficient content")
+
+            grounded_evidence = cleaned_body[:1200]
+            telemetry_summary = f"Grounded Web Evidence ({len(cleaned_body)} bytes): {grounded_evidence[:160]}"
 
             prompt = (
-                "You are an impartial Patent Examiner and DeSci Prior-Art Auditor. "
+                "You are an impartial, strictly grounded Patent Examiner and DeSci Prior-Art Auditor. "
                 f"Invention Title: {title}. Category: {category}. "
                 f"Claims Hash: {claims_hash}. Paper CID/DOI Proof: {paper_cid}. "
-                f"Registry Telemetry: {telemetry_summary}. "
-                "Evaluate strict technical novelty, non-obviousness, and prior art collisions. "
+                f"GROUND TRUTH WEB EVIDENCE (DO NOT HALLUCINATE OUTSIDE THIS EVIDENCE): \"{grounded_evidence}\". "
+                "Evaluate strict technical novelty, non-obviousness, and prior art collisions exclusively against the provided ground truth web evidence. "
+                "If the ground truth evidence does not substantiate novel claims or indicates prior art collisions, you MUST REJECT. "
                 'Respond with strict JSON: {"decision": "APPROVED" | "REJECTED", '
                 '"novelty_score": <int 0-100>, "inventive_step_score": <int 0-100>, '
                 '"citation_collision_rate": <int 0-100>, "prior_art_collision": <bool>, '
-                '"rationale": "<summary>"}'
+                '"rationale": "<summary grounded in evidence>"}'
             )
 
             res = _run_patent_llm(prompt)
@@ -349,16 +382,38 @@ class NexusPatent(gl.Contract):
             try:
                 v_res = leader_fn()
                 leader = leaders_res.calldata
-                if not isinstance(leader, dict):
+                if not isinstance(leader, dict) or not isinstance(v_res, dict):
                     return False
+
+                # 1. Exact agreement on the final certification outcome:
+                if _is_certified_result(leader) != _is_certified_result(v_res):
+                    return False
+
+                # 2. Exact agreement on decision enum and prior_art_collision boolean:
                 if leader.get("decision") != v_res.get("decision"):
                     return False
                 if leader.get("prior_art_collision") != v_res.get("prior_art_collision"):
                     return False
 
+                # 3. Strict threshold crossing gates:
+                # Novelty threshold gate (70):
+                if (int(leader.get("novelty_score", 0)) >= MIN_NOVELTY_THRESHOLD) != (int(v_res.get("novelty_score", 0)) >= MIN_NOVELTY_THRESHOLD):
+                    return False
+                # Inventive step threshold gate (65):
+                if (int(leader.get("inventive_step_score", 0)) >= MIN_INVENTIVE_THRESHOLD) != (int(v_res.get("inventive_step_score", 0)) >= MIN_INVENTIVE_THRESHOLD):
+                    return False
+                # Collision rate threshold gate (30):
+                if (int(leader.get("citation_collision_rate", 100)) <= MAX_COLLISION_RATE_THRESHOLD) != (int(v_res.get("citation_collision_rate", 100)) <= MAX_COLLISION_RATE_THRESHOLD):
+                    return False
+
+                # 4. Strict bounded numerical tolerance within the same threshold tier (<= 8 points):
                 n_diff = abs(int(v_res.get("novelty_score", 0)) - int(leader.get("novelty_score", 0)))
                 i_diff = abs(int(v_res.get("inventive_step_score", 0)) - int(leader.get("inventive_step_score", 0)))
-                return n_diff <= 15 and i_diff <= 15
+                c_diff = abs(int(v_res.get("citation_collision_rate", 0)) - int(leader.get("citation_collision_rate", 0)))
+                if n_diff > 8 or i_diff > 8 or c_diff > 8:
+                    return False
+
+                return True
             except Exception:
                 return False
 
@@ -557,6 +612,18 @@ class NexusPatent(gl.Contract):
 
 
 # --- Internal Helpers -----------------------------------------------------
+def _is_certified_result(res: dict) -> bool:
+    if not isinstance(res, dict):
+        return False
+    dec = str(res.get("decision", "")).upper() == DECISION_APPROVED
+    col = not bool(res.get("prior_art_collision", True))
+    nov = int(res.get("novelty_score", 0)) >= MIN_NOVELTY_THRESHOLD
+    inv = int(res.get("inventive_step_score", 0)) >= MIN_INVENTIVE_THRESHOLD
+    col_rate = int(res.get("citation_collision_rate", 100)) <= MAX_COLLISION_RATE_THRESHOLD
+    pi = (int(res.get("novelty_score", 0)) * 40 + int(res.get("inventive_step_score", 0)) * 45 + (100 - int(res.get("citation_collision_rate", 100))) * 15) // 100
+    return dec and col and nov and inv and col_rate and (pi >= MIN_PATENT_INDEX_THRESHOLD)
+
+
 def _run_patent_llm(prompt: str) -> dict:
     try:
         raw = gl.nondet.exec_prompt(prompt, response_format="json")
@@ -583,11 +650,11 @@ def _run_patent_llm(prompt: str) -> dict:
 
     raw_dec = str(parsed.get("decision", DECISION_REJECTED)).strip().upper()
     decision = DECISION_APPROVED if raw_dec in ("APPROVED", "CERTIFIED", "VALID", "NOVEL") else DECISION_REJECTED
-    novelty = max(0, min(100, int(parsed.get("novelty_score", 50))))
-    inventive = max(0, min(100, int(parsed.get("inventive_step_score", 50))))
-    collision_rate = max(0, min(100, int(parsed.get("citation_collision_rate", 50))))
-    prior_collision = bool(parsed.get("prior_art_collision", False))
-    rationale = str(parsed.get("rationale", "Prior-art analysis completed."))[:300]
+    novelty = max(0, min(100, int(parsed.get("novelty_score", 0))))
+    inventive = max(0, min(100, int(parsed.get("inventive_step_score", 0))))
+    collision_rate = max(0, min(100, int(parsed.get("citation_collision_rate", 100))))
+    prior_collision = bool(parsed.get("prior_art_collision", True))
+    rationale = str(parsed.get("rationale", "Grounded prior-art analysis completed."))[:300]
 
     return {
         "decision": decision,
