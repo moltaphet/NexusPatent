@@ -5,3 +5,7 @@ __pycache__/
 .gltest_cache/
 artifacts/
 .DS_Store
+
+# Local testing UI (do not push)
+ui/
+
